@@ -14,12 +14,14 @@ using namespace std;
 
 
 int outputsize = xDim*yDim/2*zDim/2;
+int Outputsize = xDim*yDim*zDim;
+
 int *devoutNeu;
 int *devPooling;
 int *devFilt;
 int *devinNeu;
 int *outResult = new int[outputsize]();
-
+int *outResult_neu = new int[Outputsize]();
 
 // This is the CPU version, please don't modify it
 void convLayerCPU()
@@ -135,7 +137,7 @@ void convLayerGPU(int *filt, int *inNeu, int *outNeural, int *outPooling)
 	int threadZ = threadIdx.z + blockIdx.z * blockDim.z;
 	int xall = blockDim.x * gridDim.x;
 	int yall = blockDim.y * gridDim.y;
-	int GlobalThreadId = threadX + threadY * xall + threadZ * xall * yall;
+	//int GlobalThreadId = threadX + threadY * xall + threadZ * xall * yall;
 	//int GlobalBlockId = blockIdx.x + blockIdx.y * gridDim.x + blockIdx.z * gridDim.y * gridDim.x;
 
 	int sli,y, x;
@@ -170,20 +172,22 @@ void convLayerGPU(int *filt, int *inNeu, int *outNeural, int *outPooling)
 	else
 		outNeural[outNeuIdx] = sum;
 
+
 	__syncthreads();
 
 /* ========== Max Pooling with Window Size 2x2 =================*/
-	
+	/*
 	if(threadX == 0 && threadY == 0 && threadZ == 0)  //asking 1 thread to do pooling
 	{
-		int i;
-		for (i = 0; i < 512*16*16; ++i)
-		{
-			outPooling[i] = 1;
-		}
-		/*	
+		//int outIdx;
+		//for (outIdx = 0; outIdx < 512*16*16; ++outIdx)
+		//{
+		//	outPooling[outIdx] = 1;
+		//}
+			
 		int max, tmpVal, py, px;
 		int  ofmy, ofmx, outIdx; // pooling varable
+		int xx,yy;
 
 		for(sli = 0; sli < 512; sli++)	//FILTNUM
 		{
@@ -193,12 +197,12 @@ void convLayerGPU(int *filt, int *inNeu, int *outNeural, int *outPooling)
 				{
 					outNeuIdx = sli*fmArea + py*2*32 + px*2;
 					max = outNeural[outNeuIdx];
-					for(y = 0; y < 2; y++)
+					for(yy = 0; yy < 2; yy++)
 					{
-						for(x = 0; x < 2; x++)
+						for(xx = 0; xx < 2; xx++)
 						{
-							ofmy = py*2 + y;
-							ofmx = px*2 + x;
+							ofmy = py*2 + yy;
+							ofmx = px*2 + xx;
 							outNeuIdx = sli*fmArea + ofmy*32 + ofmx;
 							tmpVal = outNeural[outNeuIdx];	
 							if(tmpVal > max)
@@ -209,8 +213,8 @@ void convLayerGPU(int *filt, int *inNeu, int *outNeural, int *outPooling)
 					outPooling[outIdx] = max;
 				}
 			}
-		}*/
-	}
+		}
+	}*/
 }
 
 
@@ -290,17 +294,19 @@ int main()
 	cudaMemcpy(outGPU, devPooling, outSize, cudaMemcpyDeviceToHost);
 	//cudaMemcpy(outResult, devPooling, outSize, cudaMemcpyDeviceToHost);
 	
+	int OutSize = sizeof(int)*Outputsize; 
+	cudaMemcpy(outResult_neu, devoutNeu, OutSize, cudaMemcpyDeviceToHost);
+	
 	cudaFree(&devoutNeu);
 	cudaFree(&devPooling);
 	cudaFree(&devFilt);
 	cudaFree(&devinNeu);
 
 
-	for (int i = 0; i < 512*16*16; ++i)
+	for (int i = 0; i < 512*32*32; ++i)
 	{
-		printf("%d ",outGPU[i]);
+		printf("%d ",outResult_neu[i]);
 	}
-
 
 /*
 	if(checker())
