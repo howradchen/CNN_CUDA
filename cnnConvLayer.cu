@@ -12,11 +12,14 @@ using namespace std;
 #define yThreadDim 16
 #define zThreadDim 4
 
-int *devOut;
-int outputsize = xDim * yDim * zDim;
+
+int outputsize = xDim*yDim/2*zDim/2;
+int *devoutNeu;
+int *devPooling;
+int *devFilt;
+int *devinNeu;
 int *outResult = new int[outputsize]();
 
-int *CPUout = new int[outputsize](); //
 
 // This is the CPU version, please don't modify it
 void convLayerCPU()
@@ -100,35 +103,154 @@ void convLayerCPU()
 
 void initGPU()
 {
+	int outNeuVol = FILTNUM * FMSIZE * FMSIZE;  //512x32x32
+	int outPolVol = FILTNUM * FMSIZE/2 * FMSIZE/2;  //512x16x16
+	int filtTensorVol = FILTNUM * FMDEPTH * FILTSIZE * FILTSIZE; //
+	int inNeuVol = FMDEPTH * FMSIZE * FMSIZE;
+
+	cudaMalloc(&devoutNeu, sizeof(int)*outNeuVol);
+	cudaMalloc(&devPooling, sizeof(int)*outPolVol);
+	cudaMalloc(&devFilt, sizeof(short)*filtTensorVol);
+	cudaMalloc(&devinNeu, sizeof(short)*inNeuVol);
+
+	cudaMemcpy(devFilt, filt, filtTensorVol, cudaMemcpyHostToDevice);
+	cudaMemcpy(devinNeu, inNeu, inNeuVol, cudaMemcpyHostToDevice);
+
+	/*int inputSize = sizeof(int)*VECNUM*VECLEN;
+	cudaMalloc(&devInputA, inputSize);
+	cudaMalloc(&devInputB, inputSize);
 	cudaMalloc(&devOut, sizeof(int)*outputsize);
-}
-
-void CPUrun()
-{
-	int i;
-
-	for (i = 0; i < outputsize; ++i)
-	{
-		CPUout[i] = 1;
-	}
+	cudaMalloc(&devOut, sizeof(int)*VECNUM);
+	cudaMemcpy(devInputA, inputA, inputSize, cudaMemcpyHostToDevice);
+	cudaMemcpy(devInputB, inputB, inputSize, cudaMemcpyHostToDevice);*/
 }
 
 
 /***	Implement your CUDA Kernel here	***/
 __global__
-void convLayerGPU(int *out)
+void convLayerGPU(int *filt, int *inNeu, int *outNeural, int *outPooling)
 {
-	int x = threadIdx.x + blockIdx.x * blockDim.x;
-	int y = threadIdx.y + blockIdx.y * blockDim.y;
-	int z = threadIdx.z + blockIdx.z * blockDim.z;
+	int threadX = threadIdx.x + blockIdx.x * blockDim.x;
+	int threadY = threadIdx.y + blockIdx.y * blockDim.y;
+	int threadZ = threadIdx.z + blockIdx.z * blockDim.z;
 	int xall = blockDim.x * gridDim.x;
 	int yall = blockDim.y * gridDim.y;
-	int offset = x + y * xall + z * xall * yall;
+	int GlobalThreadId = threadX + threadY * xall + threadZ * xall * yall;
+	//int GlobalBlockId = blockIdx.x + blockIdx.y * gridDim.x + blockIdx.z * gridDim.y * gridDim.x;
 
-	out[offset] = 1;
+	int sli,y, x;
+	int ifmy, ifmx;
+	int filtIdx, inNeuIdx, outNeuIdx;
+	int filtVol = 4608;  	//512x3x3
+	int filtArea = 9;		//3x3
+	int fmArea = 1024;	//32x32
+	int outArea = 256;	//32/2*32/2
+	int sum = 0;
 
+	for(sli = 0; sli < 512; sli++)  //512
+	{
+		for(y = 0; y < 3; y++)  //3
+		{
+			for(x = 0; x < 3; x++)  //3
+			{
+				ifmy = threadY - 3 / 2 + y;		//no dependancy
+				ifmx = threadZ - 3 / 2 + x;		//no dependancy
+				filtIdx = (threadX * filtVol) + (sli * filtArea) + (y * 3) + x;//no dependancy
+				inNeuIdx = sli * fmArea + ifmy * 32 + ifmx;					//no dependancy
+				if(ifmy >= 0 && ifmy < 32 && ifmx >= 0 && ifmx < 32)		
+					sum += filt[filtIdx] * inNeu[inNeuIdx];
+			}
+		}
+	}
+
+	// Activation - ReLU
+	outNeuIdx = threadX * fmArea + threadY*32 + threadZ;
+	if(sum <= 0)
+		outNeural[outNeuIdx] = 0;
+	else
+		outNeural[outNeuIdx] = sum;
+
+	__syncthreads();
+
+/* ========== Max Pooling with Window Size 2x2 =================*/
+	
+	if(threadX == 0 && threadY == 0 && threadZ == 0)  //asking 1 thread to do pooling
+	{
+		int i;
+		for (i = 0; i < 512*16*16; ++i)
+		{
+			outPooling[i] = 1;
+		}
+		/*	
+		int max, tmpVal, py, px;
+		int  ofmy, ofmx, outIdx; // pooling varable
+
+		for(sli = 0; sli < 512; sli++)	//FILTNUM
+		{
+			for(py = 0; py < 16 ; py += 1) //FMSIZE/2
+			{
+				for(px = 0; px < 16 ; px += 1)  //FMSIZE/2
+				{
+					outNeuIdx = sli*fmArea + py*2*32 + px*2;
+					max = outNeural[outNeuIdx];
+					for(y = 0; y < 2; y++)
+					{
+						for(x = 0; x < 2; x++)
+						{
+							ofmy = py*2 + y;
+							ofmx = px*2 + x;
+							outNeuIdx = sli*fmArea + ofmy*32 + ofmx;
+							tmpVal = outNeural[outNeuIdx];	
+							if(tmpVal > max)
+								max = tmpVal;
+						}
+					}
+					outIdx = sli*outArea + py*32/2 + px;
+					outPooling[outIdx] = max;
+				}
+			}
+		}*/
+	}
 }
-/***	Implement your CUDA Kernel here	***/
+
+
+
+
+/*
+__global__ 
+void MaxPoolingGPU(int *out)  // Max Pooling with Window Size 2x2
+{
+	int threadX = threadIdx.x + blockIdx.x * blockDim.x;
+	int threadY = threadIdx.y + blockIdx.y * blockDim.y;
+	int threadZ = threadIdx.z + blockIdx.z * blockDim.z;
+	int xall = blockDim.x * gridDim.x;
+	int yall = blockDim.y * gridDim.y;
+	int GlobalThreadId = threadX + threadY * xall + threadZ * xall * yall;
+	int GlobalBlockId = blockIdx.x + blockIdx.y * gridDim.x + blockIdx.z * gridDim.y * gridDim.x;
+	
+	int max, tmpVal, outNeuIdx, x, y;
+	int fmArea = 32 *32;
+	int outArea = 32/2 * 32/2;
+	int  ofmy, ofmx, outIdx; // pooling varable
+
+	outNeuIdx = threadX*fmArea + threadY*2*32 + threadZ*2;
+	max = outNeu[outNeuIdx];
+	for(y = 0; y < 2; y++)
+	{
+		for(x = 0; x < 2; x++)
+		{
+			ofmy = threadY*2 + y;
+			ofmx = threadZ*2 + x;
+			outNeuIdx = threadX*fmArea + ofmy*32 + ofmx;
+			tmpVal = outNeu[outNeuIdx];	
+			if(tmpVal > max)
+				max = tmpVal;
+		}
+	}
+	outIdx = threadX*outArea + threadY*32/2 + threadZ;
+	out[outIdx] = max;
+}
+*/
 
 int main()
 {
@@ -140,7 +262,6 @@ int main()
 	timespec time_begin, time_end;                                                 
   	clock_gettime(CLOCK_REALTIME, &time_begin);
 	//convLayerCPU();
-	CPUrun();
   	clock_gettime(CLOCK_REALTIME, &time_end);
 	convLayerCPUExecTime = timespec_diff_us(time_begin, time_end);
 	cout << " ================ Result ===================" << endl;
@@ -156,7 +277,7 @@ int main()
  	clock_gettime(CLOCK_REALTIME, &time_begin);
 
 
-	convLayerGPU<<<numBlocks,threadPerBlock>>>(devOut); 
+	convLayerGPU<<<numBlocks,threadPerBlock>>>(devFilt, devinNeu, devoutNeu, devPooling); 
 
 
 	cudaDeviceSynchronize(); 
@@ -166,30 +287,22 @@ int main()
 
 
 	int outSize = sizeof(int)*outputsize;
-	cudaMemcpy(outResult, devOut, outSize, cudaMemcpyDeviceToHost);
-	cudaFree(&devOut);
+	cudaMemcpy(outGPU, devPooling, outSize, cudaMemcpyDeviceToHost);
+	//cudaMemcpy(outResult, devPooling, outSize, cudaMemcpyDeviceToHost);
+	
+	cudaFree(&devoutNeu);
+	cudaFree(&devPooling);
+	cudaFree(&devFilt);
+	cudaFree(&devinNeu);
 
 
-	int sumGPU = 0;
-	int sumCPU = 0;
-	for (int i = 0; i < outputsize; ++i)
+	for (int i = 0; i < 512*16*16; ++i)
 	{
-		sumGPU += outResult[i];
-		sumCPU += CPUout[i];
+		printf("%d ",outGPU[i]);
 	}
-
-	if((sumCPU - sumGPU) == 0)
-		printf("right\n");
-	else
-		printf("wrong\n");
-
-	delete [] outResult;
-	delete [] CPUout;
-
 
 
 /*
-
 	if(checker())
 	{
 		cout << "Congratulations! You pass the check." << endl;
@@ -198,6 +311,7 @@ int main()
 	else
 		cout << "Sorry! Your result is wrong." << endl;
 */
+
 	ending();
 	
 	return 0;
